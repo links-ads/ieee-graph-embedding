@@ -59,7 +59,7 @@ class GATstandard(nn.Module):
         return mygat
 
 
-class MyGAT(nn.Module):
+class samGAT(nn.Module):
     def __init__(self,
                  in_size: int,
                  emb_size: int,
@@ -68,7 +68,7 @@ class MyGAT(nn.Module):
                  num_layers: int,
                  unitary: bool,
                  dropout: float) -> None:
-        super(MyGAT, self).__init__()
+        super(samGAT, self).__init__()
         assert emb_size % n_heads == 0, "Embedding size has to be multiple of n_heads \
             (due to the implementation of multi-head attention)"
         self.emb_size = emb_size

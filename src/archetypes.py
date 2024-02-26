@@ -6,7 +6,7 @@ import torch
 from torch import Tensor
 from torch_geometric.utils import to_undirected, add_self_loops
 from torch_geometric.data import Data
-from src.models.graph_att_nets import myGAT
+from src.models.gat.models import samGAT
 from src.utils import FileIO
 
 
@@ -64,7 +64,7 @@ class Archetypes:
         archet_ids = [i for i, u in enumerate(g.nodes()) if u in archtype2conn]
         return user2emb, g, archet_ids, archt_users
 
-    def create_archetypes_graph_embeddings(self, graph_model: myGAT):
+    def create_archetypes_graph_embeddings(self, graph_model: samGAT):
         """Run GAT on archetypes initial embeddings to get graph aware
         embeddigns."""
         user2emb, g, archetypes_ids, archetype_users = self.get_adjacency_and_features()
