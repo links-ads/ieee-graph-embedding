@@ -33,6 +33,7 @@ here there are 4 files:
 - `hate_archetypes_and_neighs_tweet_embeddings.json` average post embeddings of each archetype and connected user;
 - `hate_archetypes_initial_embeddings.json` initial embeddings for just archetype users;
 - `hate_archetypes_graph_embeddings` graph embedding for archetypes (computed with ```samGATs```)
+
 The graph semantic embeddings of the archetypes can be used, as mentioned in the paper, to estimate a score for hatefulness of a new user, as long as the graph model used to embed archetypes and user is the same.
 
 ## Citing this work
