@@ -1,6 +1,6 @@
 # Self-Training Graph Semantic Embeddings
 Code and Dataset for the journal paper _Enhancing Social Media User Semantic Embedding through Graph-Aware Contrastive Self-Supervised Learning_ (IEEE Access 2024)
-![image](evaluation_gnn.)
+![image](evaluation_gnn.png)
 
 ## Datasets
 - Twitter Neighbour Dataset for model pre-training available at [hf.co/datasets/links-ads/twitter-neighbours](https://huggingface.co/datasets/links-ads/twitter-neighbours).
@@ -25,6 +25,14 @@ embs = samGAT(x=graph_data.x, edge_index=graph_data.edge_index.contiguous())
 
 where `graph_data.x` are the initial representation for each node (in case of social media users it could be the average text embeddings of the user post)
 
+
+## Archetypes for hateful users few-shot
+In the folder `data/AppraieEval/archetypes` archetypes for hatefull users can be found.
+here there are 4 files:
+- `hate_archetypes_neighbours.json` archetypes of users connections;
+- `hate_archetypes_and_neighs_tweet_embeddings.json` average post embeddings of each archetype and connected user;
+- `hate_archetypes_initial_embeddings.json` initial embeddings for just archetype users;
+- `hate_archetypes_graph_embeddings` graph embedding for archetypes (computed with ```samGATs```)
 
 ## Citing this work
 ```bibtex
