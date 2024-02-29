@@ -1,5 +1,6 @@
 # Self-Training Graph Semantic Embeddings
 Code and Dataset for the journal paper _Enhancing Social Media User Semantic Embedding through Graph-Aware Contrastive Self-Supervised Learning_ (IEEE Access 2024)
+![image](evaluation_gnn.)
 
 ## Datasets
 - Twitter Neighbour Dataset for model pre-training available at [hf.co/datasets/links-ads/twitter-neighbours](https://huggingface.co/datasets/links-ads/twitter-neighbours).
