@@ -10,6 +10,7 @@ plots/*
 tensorboard_runs/*
 results/*
 outputs/*
+paper/*
 
 *.log
 *.out
