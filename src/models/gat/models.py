@@ -63,9 +63,9 @@ class samGAT(nn.Module):
     def __init__(self,
                  in_size: int,
                  emb_size: int,
+                 num_layers: int,
                  n_heads: int,
                  out_size: int,
-                 num_layers: int,
                  unitary: bool,
                  dropout: float) -> None:
         super(samGAT, self).__init__()
@@ -73,6 +73,7 @@ class samGAT(nn.Module):
             (due to the implementation of multi-head attention)"
         self.emb_size = emb_size
         self.num_layers = num_layers
+        self.num_heads = n_heads
         # The first layer has input_size = initial_node_feature_size
         # All other layers have input_size = output_size = emb_size.
         self.gat_layers = nn.ModuleList([

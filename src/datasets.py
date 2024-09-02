@@ -4,9 +4,9 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from collections import defaultdict
-from src.utils import FileIO
+from src.utils import FileIO, make_undirected
 from torch_geometric.data import Data
-from torch_geometric.utils import (to_undirected, contains_isolated_nodes,
+from torch_geometric.utils import (contains_isolated_nodes,
                                    remove_self_loops, remove_isolated_nodes)
 
 logger = logging.getLogger('graphembedding')
@@ -27,7 +27,7 @@ class HateOnTwitter():
         self.data = torch.load(f'{self.folder}/user_clean_graph.pygeodata')
         # Preprocessing.
         if undirected:
-            self.data.edge_index = to_undirected(self.data.edge_index)
+            self.data.edge_index = make_undirected(self.data.edge_index)
         if remove_selfloops:
             self.data.edge_index, _ = remove_self_loops(edge_index=self.data.edge_index)
         if rm_isolated_nodes and contains_isolated_nodes(self.data.edge_index):

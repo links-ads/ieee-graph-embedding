@@ -1,6 +1,7 @@
 import time
 import logging
-from typing import Tuple, List, Iterable, Optional, Union
+from tqdm import tqdm
+from typing import Tuple, List, Iterable, Optional
 from copy import deepcopy
 from sklearn.metrics import precision_recall_fscore_support as prec_rec_f_supp
 from random import shuffle
@@ -15,7 +16,7 @@ from src.graph import GraphBatcher, PositivesSampler
 from src.models.decoders import LogisticRegression
 from src.loss import SoftNearestNeighboursLoss
 from src.results import ResultsLogger
-from src.utils import get_neighbours, compute_furthest_nodes, FileIO
+from src.utils import (get_neighbours, get_neighs_and_furthest_nodes, FileIO)
 import warnings
 
 
@@ -118,10 +119,6 @@ class SupervisedTrainer:
             return True
 
         return False
-
-
-def pad_neighbourhood():
-    pass
 
 
 class GraphTrainer():
@@ -324,32 +321,49 @@ class GraphTrainer():
 
 
 class ContrastiveGraphTrainer:
-    def __init__(self, graph_eval: Data, folder: str, device: str) -> None:
+    def __init__(self, graph_train: Data, graph_eval: Data, folder: str, device: str,
+                 compute_neighs_and_furthest_nodes_train: bool = False,
+                 compute_neighs_and_furthest_nodes_eval: bool = False) -> None:
+        self.folder = folder
+        self.graph_train = graph_train
         self.graph_eval = graph_eval
         self.device = device
-        self.evaluator = Evaluator(graph_eval, folder, False, False)
+        self.evaluator = Evaluator(graph_eval, folder)
+        # Pre-compute neighbours and furthest nodes.
+        logger.info('Getting neighs and furthest nodes')
+        self.neigh_nodes, self.furthest_nodes = get_neighs_and_furthest_nodes(
+            graph_train,
+            compute_neighs_and_furthest_nodes_train,
+            f'{self.folder}/train_useruser_neighbour_nodes.json',
+            f'{self.folder}/train_useruser_furthest_nodes.json'
+        )
+        self.evaluator.neighs_nodes, self.evaluator.furthest_nodes = get_neighs_and_furthest_nodes(
+            graph_eval,
+            compute_neighs_and_furthest_nodes_eval,
+            f'{self.folder}/eval_useruser_neighbour_nodes.json',
+            f'{self.folder}/eval_useruser_furthest_nodes.json'
+        )
         self.criterion = SoftNearestNeighboursLoss(False, 'dot').to(self.device)
         self.criterion.T = 0.3
-        self.neighbour_nodes = \
-            FileIO.read_json(f'{folder}/useruser_neighbour_nodes.json')
 
     def train(self,
-              graph: Data,
               encoder: samGAT,
-              loss_n_pos: int,
-              loss_n_negs: int,
+              n_pos: int,
+              n_negs: int,
               n_epochs: int,
               lr: float) -> samGAT:
         # Initialize the optimizer.
         optimizer = torch.optim.Adam(encoder.parameters(), lr=lr)
 
         # Train the model.
+        n_samples = 1000
         for epoch in range(n_epochs):
             logger.info(f'Epoch {epoch}')
             optimizer.zero_grad()
-            embs = encoder(x=graph.init_emb,
-                           edge_index=graph.edge_index.contiguous())
-            loss = self.compute_contrastive_loss(embs, loss_n_pos, loss_n_negs)
+            embs = encoder(x=self.graph_train.x,
+                           edge_index=self.graph_train.edge_index.contiguous())
+            loss = self.contrastive_loss(embs, self.graph_train.edge_index,
+                                         n_samples, n_pos, n_negs)
             logger.info('Loss contrastive train: %.5f' % loss.item())
             self.evaluator.evaluate(encoder)
             loss.backward()
@@ -357,12 +371,56 @@ class ContrastiveGraphTrainer:
 
         return encoder
 
-    def compute_contrastive_loss(self, embs: Tensor, n_pos: int,
-                                 n_negs: int) -> Tensor:
+    def contrastive_loss(self, embs: Tensor, edge_index: Data.edge_index,
+                         n_samples: int, n_pos: int, n_negs: int) -> Tensor:
+        '''Implemennts SoftNearestNeighboursLoss.'''
+        num_nodes = embs.shape[0]
+        perm = torch.randperm(num_nodes)
+        sampled_nodes = perm[: n_samples]
+        # mask = torch.isin(edge_index[0], sampled_nodes)
+        # anchors = edge_index[0, mask]
+        # positives = edge_index[1, mask]  # positives are the neighbours of the anchors.
+
+        anchors, positives, lengths = [], [], []
+        for node in sampled_nodes:
+            idxs = torch.nonzero(edge_index[0] == node, as_tuple=False).squeeze()
+            if len(idxs.shape) == 0:
+                idxs = idxs.unsqueeze(0)
+            idxs = idxs[torch.randperm(len(idxs))[: n_pos]]
+            anchors.extend(edge_index[0, idxs])
+            positives.extend(edge_index[1, idxs])
+            lengths.append(len(idxs))
+        anchors = torch.stack(anchors)
+        positives = torch.stack(positives)
+        # Get negatives. Just take the appropriate number (N * n_negs) random nodes,
+        # as the probability that a node taken at random happens to be the neighbour
+        # of the relative anchor node should be small.
+        N = len(anchors)
+        perm = torch.randperm(num_nodes)
+        ratio_neg_pos = int(n_negs / n_pos)  # Number of negatives per positive.
+        negatives = perm[: N * ratio_neg_pos].reshape(N, ratio_neg_pos)
+
+        T = 0.3
+        L = 0
+        loss = []
+        for dl in lengths:
+            if dl > 0:
+                anc = embs[anchors[L: L + dl]]
+                pos = embs[positives[L: L + dl]]
+                neg = embs[negatives[L: L + dl, :]]
+                pos = torch.exp(-((anc - pos).norm(dim=1) ** 2) / T).sum()
+                neg = torch.exp(-((anc.unsqueeze(1) - neg).norm(dim=2) ** 2) / T).sum()
+                lo = torch.log(pos / (pos + neg))
+                loss.append(lo)
+            L += dl
+        return - torch.stack(loss).mean()
+
+    def contrastive_loss_old(self, embs: Tensor, edge_index: Data.edge_index,
+                             n_pos: int, n_negs: int) -> Tensor:
         pad_emb = torch.zeros(embs.shape[1])
         nodes_ids = list(range(embs.shape[0]))
         positives, negatives, pos_pad_mask = [], [], []
-        for i in nodes_ids:
+        for i in tqdm(nodes_ids):
             # Sample n_pos positives.
             neigh_ids = self.neighbour_nodes[str(i)]
             shuffle(neigh_ids)
@@ -389,48 +447,24 @@ class ContrastiveGraphTrainer:
 
 
 class Evaluator:
-    def __init__(self,
-                 graph_eval: Data,
-                 folder: str,
-                 compute_furthest_nodes_dict: bool = False,
-                 compute_neigbours_dict: bool = False) -> None:
+    def __init__(self, graph_eval: Data, folder: str) -> None:
+        self.folder = folder
         self.graph_eval = graph_eval
-        logger.info('Initializing Evaluator...')
-        if compute_furthest_nodes_dict:
-            logger.info('Computing furthest nodes...')
-            self.furthest_nodes = compute_furthest_nodes(graph_eval)
-            FileIO.write_json(self.furthest_nodes,
-                              f'{folder}/useruser_furthest_nodes.json')
-        else:
-            self.furthest_nodes = \
-                FileIO.read_json(f'{folder}/useruser_furthest_nodes.json')
-
-        if compute_neigbours_dict:
-            logger.info('Computing neighbours...')
-            self.neighbour_nodes = {
-                node_idx: get_neighbours(graph_eval, node_idx).tolist()
-                for node_idx in range(graph_eval.num_nodes)
-            }
-            FileIO.write_json(self.neighbour_nodes,
-                              f'{folder}/useruser_neighbour_nodes.json')
-        else:
-            self.neighbour_nodes = \
-                FileIO.read_json(f'{folder}/useruser_neighbour_nodes.json')
 
     def evaluate(self, encoder: samGAT, precomputed_embs: Tensor = None
                  ) -> Tuple[float, float]:
         if precomputed_embs is None:
             with torch.no_grad():
-                embs_eval = encoder(self.graph_eval.init_emb,
+                embs_eval = encoder(self.graph_eval.x,
                                     self.graph_eval.edge_index.contiguous())
         else:
             embs_eval = precomputed_embs
         """Evaluate the model on the graph."""
         neigh_simil_init, neigh_simil_gat = self.similarity_users_neighbours(
-            self.graph_eval, embs_eval, self.graph_eval.init_emb
+            self.graph_eval, embs_eval, self.graph_eval.x
         )
         far_simil_init, far_simil_gat = self.similarity_users_far_away(
-            self.graph_eval, embs_eval, self.graph_eval.init_emb
+            self.graph_eval, embs_eval, self.graph_eval.x
         )
 
         # Log results.
@@ -452,7 +486,7 @@ class Evaluator:
         cosim_init = 0
         cossim_gat = 0
         for node_idx in range(graph_uu.num_nodes):
-            neighs_idx = self.neighbour_nodes[str(node_idx)]
+            neighs_idx = self.neighs_nodes[str(node_idx)]
             node_init_emb = embs_init[node_idx]
             neighs_init_emb = embs_init[neighs_idx]
 
@@ -474,7 +508,7 @@ class Evaluator:
         cosim_init = 0
         cossim_gat = 0
         for node_idx in range(graph_uu.num_nodes):
-            furthest_nodes_idx = self.furthest_nodes[str(node_idx)]
+            furthest_nodes_idx = self.furthest_nodes[node_idx]
             node_init_emb = embs_init[node_idx]
             furthest_nodes_init_emb = embs_init[furthest_nodes_idx]
 

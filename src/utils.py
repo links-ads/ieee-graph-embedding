@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 from tqdm import tqdm
 import random
 from typing import Dict, List, Tuple, Union
@@ -9,6 +10,7 @@ import csv
 import numpy as np
 import datetime
 from collections import deque
+import networkx as nx
 import torch
 from torch import LongTensor
 import torch.nn as nn
@@ -16,16 +18,92 @@ import torch.nn.functional as F
 from torch import FloatTensor
 import torch_geometric
 from torch_geometric.data import Data
-from torch_geometric.utils import to_undirected
+from torch_geometric.utils import (to_undirected, subgraph, remove_isolated_nodes,
+                                   to_dense_adj, to_networkx)
+
+logger = logging.getLogger('graphembedding')
 
 
-def split_graph_train_val(graph: Data, train_ratio: float) -> Tuple[Data, Data]:
+def split_graph_edges_train_val(graph: Data, train_ratio: float) -> Tuple[Data, Data]:
+    '''Split edges for training and validation'''
     train_mask = torch.rand(graph.num_edges) < train_ratio
     edge_idx_train = to_undirected(graph.edge_index[:, train_mask])
     edge_idx_val = to_undirected(graph.edge_index[:, ~train_mask])
-    graph_train = Data(init_emb=graph.init_emb, edge_index=edge_idx_train)
-    graph_val = Data(init_emb=graph.init_emb, edge_index=edge_idx_val)
+    graph_train = Data(x=graph.x, edge_index=edge_idx_train)
+    graph_val = Data(x=graph.x, edge_index=edge_idx_val)
     return graph_train, graph_val
+
+
+def split_graph_nodes_train_val(graph: Data, train_ratio: float) -> Tuple[Data, Data]:
+    '''Split nodes for training and validation'''
+    num_nodes = graph.num_nodes
+    num_train = int(train_ratio * num_nodes)
+    perm = torch.randperm(num_nodes)
+    train_idx = perm[:num_train]
+    val_idx = perm[num_train:]
+    # Create training and validation edge_indexes.
+    edge_idx_train, _ = subgraph(train_idx, graph.edge_index, relabel_nodes=True)
+    edge_idx_train, _, mask = remove_isolated_nodes(edge_idx_train)
+    train_idx = train_idx[mask]  # Remove isolated nodes from train_idx.
+    edge_idx_train = make_undirected(edge_idx_train)
+    edge_idx_val, _ = subgraph(val_idx, graph.edge_index, relabel_nodes=True)
+    edge_idx_val, _, mask = remove_isolated_nodes(edge_idx_val)
+    val_idx = val_idx[mask]  # Remove isolated nodes from val_idx.
+    edge_idx_val = make_undirected(edge_idx_val)
+    # Create graph_training and graph_validation.
+    graph_training = Data(x=graph.x[train_idx], edge_index=edge_idx_train,
+                          y=graph.y[train_idx])
+    graph_validation = Data(x=graph.x[val_idx], edge_index=edge_idx_val,
+                            y=graph.y[val_idx])
+
+    return graph_training, graph_validation
+
+
+def make_undirected(edge_index: LongTensor) -> LongTensor:
+    '''
+    Make the graph undirected.
+    torch-geometric.utils.to_undirected() do not work properly.
+
+    :param edge_index: 2D LongTensor representing the edge_index.
+    :return: 2D LongTensor representing the edge_index of the undirected graph.
+    '''
+    # For each edge add edge in the opposite direction.
+    row, col = edge_index[0], edge_index[1]
+    row, col = torch.cat([row, col], dim=0), torch.cat([col, row], dim=0)
+    edge_index = torch.stack([row, col], dim=0)
+    # Remove duplicate edges.
+    edge_index = torch.unique(edge_index, dim=1)
+    # Sort by row.
+    rows_sorted_idx = torch.argsort(edge_index)[0]
+    return edge_index[:, rows_sorted_idx]
+
+
+def check_is_undirected(edge_index: LongTensor) -> bool:
+    '''
+    Check if the graph is undirected.
+    torch_geometric.utils.is_undirected() do not work properly.
+
+    :param edge_index: 2D LongTensor representing the edge_index.
+    :return: True if the graph is undirected, False otherwise.
+    '''
+    n_edges = edge_index.shape[1]
+    already_seen = set([])
+    for i in tqdm(range(n_edges)):
+        x = edge_index[0, i]
+        y = edge_index[1, i]
+        if x > y:
+            x, y = y, x
+        edge_name = f'{x}-{y}'
+        if edge_name in already_seen:
+            already_seen.remove(edge_name)
+        else:
+            already_seen.add(edge_name)
+    return len(already_seen) == 0
+
+
+def check_self_loops(edge_index: LongTensor) -> bool:
+    '''Check if there are self loops in the edge_index.'''
+    return (edge_index[0] == edge_index[1]).any()
 
 
 def get_neighbours(graph: Data, node: int) -> LongTensor:
@@ -34,34 +112,75 @@ def get_neighbours(graph: Data, node: int) -> LongTensor:
     return graph.edge_index[1][mask]
 
 
-def compute_furthest_nodes(graph: Data) -> Dict[int, int]:
+def compute_topn_far_nodes(graph: Data, N: int) -> Dict[int, List[int]]:
+    '''Compute the N nodes that are the furthest from each node in the graph.
+
+    :param graph: PyG Data object
+    :param N: Number of furthest nodes to compute
+    :return: Dictionary with node as key and list of furthest nodes as value
+    '''
+    # Convert edge_index to an adjacency matrix
+    adj = to_dense_adj(graph.edge_index)[0]
+
+    # Convert the adjacency matrix to a NetworkX graph for easier distance computation
+    G = nx.from_numpy_array(adj.numpy())
+
+    # To store furthest nodes for each node
+    furthest_nodes = {}
+    for src_trgs_dist in tqdm(nx.all_pairs_shortest_path_length(G),
+                              desc='Computing furthest nodes'):
+        src = src_trgs_dist[0]
+        trgs_dist = src_trgs_dist[1]
+        sorted_trgs_dist = sorted(trgs_dist.items(), key=lambda x: x[1], reverse=True)
+        furthest_nodes[src] = sorted_trgs_dist[: N]
+    return furthest_nodes
+
+
+def compute_furthest_nodes(graph: Data) -> Dict[int, Dict[int, int]]:
     """Compute the furthest node for each node in the graph via BFS."""
-    nx_graph = torch_geometric.utils.to_networkx(graph, to_undirected=True)
+    nx_graph = torch_geometric.utils.to_networkx(graph)
     furthest_nodes = {}
     for node in tqdm(nx_graph.nodes):
         visited = set()
         queue = deque([(node, 0)])
         visited.add(node)
         max_distance = 0
-        set_of_furthest_nodes = set([])
-
+        node_furthest_nodes = {}
+        # BFS.
         while queue:
             current_node, distance = queue.popleft()
-
             if distance > max_distance:
                 max_distance = distance
-                set_of_furthest_nodes = set([current_node])  # Reset set of furthest nodes.
-            elif distance == max_distance:  # Add node to set of furthest nodes.
-                set_of_furthest_nodes.add(current_node)
-
+                node_furthest_nodes = {int(current_node): distance}  # Reset dict of furthest nodes.
+            elif distance == max_distance:  # Add node to dict of furthest nodes.
+                node_furthest_nodes[int(current_node)] = distance
+            # Add unvisited neighbors to queue.
             for neighbor in nx_graph.neighbors(current_node):
                 if neighbor not in visited:
                     visited.add(neighbor)
                     queue.append((neighbor, distance + 1))
-
-        furthest_nodes[node] = list(set_of_furthest_nodes)
-
+        furthest_nodes[int(node)] = node_furthest_nodes
     return furthest_nodes
+
+
+def get_neighs_and_furthest_nodes(graph_uu: Data,
+                                  compute: bool,
+                                  file_neighs: str,
+                                  file_furthest: str) -> Tuple[dict, dict]:
+    if compute:
+        logger.info('Computing neighbour nodes')
+        neighbour_nodes = {
+            int(node_idx): get_neighbours(graph_uu, node_idx).tolist()
+            for node_idx in tqdm(range(graph_uu.num_nodes))
+        }
+        logger.info('Computing furthest nodes')
+        furthest_nodes = compute_topn_far_nodes(graph_uu)
+        FileIO.write_json(neighbour_nodes, file_neighs)
+        FileIO.write_json(furthest_nodes, file_furthest)
+    else:
+        neighbour_nodes = FileIO.read_json(file_neighs)
+        furthest_nodes = FileIO.read_json(file_furthest)
+    return neighbour_nodes, furthest_nodes
 
 
 def cos_sim_0(a: FloatTensor, b: FloatTensor) -> FloatTensor:
