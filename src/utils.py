@@ -4,8 +4,6 @@ from tqdm import tqdm
 import random
 from typing import Dict, List, Tuple, Union
 import json
-import openpyxl
-import csv
 import numpy as np
 import datetime
 from collections import deque
@@ -151,21 +149,6 @@ class FileIO:
     def write_json(data, filename):
         with open(filename, "w", encoding="utf8") as f:
             json.dump(data, f)
-
-    @staticmethod
-    def read_excel(filename, sheet_name="Sheet1"):
-        wb_obj = openpyxl.load_workbook(filename)
-        return wb_obj[sheet_name]
-
-    @staticmethod
-    def read_csv(filename: str) -> List[Dict]:
-        with open(filename, "r", encoding="utf8") as f:
-            csvreader = csv.reader(f)
-            header = next(csvreader)
-            return [
-                {h: x for h, x in zip(header, row) if h}
-                for row in csvreader
-            ]
 
     @staticmethod
     def write_numpy(filename: str, array: np.array) -> None:
