@@ -163,18 +163,22 @@ def compute_furthest_nodes(graph: Data) -> Dict[int, Dict[int, int]]:
 def get_neighs_and_furthest_nodes(graph_uu: Data,
                                   compute: bool,
                                   file_neighs: str,
-                                  file_furthest: str) -> Tuple[dict, dict]:
+                                  file_furthest: str,
+                                  topn_furthest_nodes: int = 100) -> Tuple[dict, dict]:
     if compute:
         logger.info('Computing neighbour nodes')
         neighbour_nodes = {
             int(node_idx): get_neighbours(graph_uu, node_idx).tolist()
-            for node_idx in tqdm(range(graph_uu.num_nodes))
+            for node_idx in tqdm(range(graph_uu.num_nodes), delay=20)
         }
-        logger.info('Computing furthest nodes')
-        furthest_nodes = compute_topn_far_nodes(graph_uu)
         FileIO.write_json(neighbour_nodes, file_neighs)
+        logger.info(f'Neighs nodes saved into: {file_neighs}')
+        logger.info('Computing furthest nodes')
+        furthest_nodes = compute_topn_far_nodes(graph_uu, topn_furthest_nodes)
         FileIO.write_json(furthest_nodes, file_furthest)
+        logger.info(f'Furthest nodes saved into: {file_furthest}')
     else:
+        logger.info('Loading neighbour and furthest nodes')
         neighbour_nodes = FileIO.read_json(file_neighs)
         furthest_nodes = FileIO.read_json(file_furthest)
     return neighbour_nodes, furthest_nodes
