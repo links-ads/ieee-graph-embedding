@@ -5,8 +5,6 @@ from tqdm import tqdm
 import random
 from typing import Dict, List, Tuple, Union
 import json
-import openpyxl
-import csv
 import numpy as np
 import datetime
 from collections import deque
@@ -19,7 +17,7 @@ from torch import FloatTensor
 import torch_geometric
 from torch_geometric.data import Data
 from torch_geometric.utils import (to_undirected, subgraph, remove_isolated_nodes,
-                                   to_dense_adj, to_networkx)
+                                   to_dense_adj)
 
 logger = logging.getLogger('graphembedding')
 
@@ -119,20 +117,19 @@ def compute_topn_far_nodes(graph: Data, N: int) -> Dict[int, List[int]]:
     :param N: Number of furthest nodes to compute
     :return: Dictionary with node as key and list of furthest nodes as value
     '''
-    # Convert edge_index to an adjacency matrix
+    # Convert edge_index to an adjacency matrix.
     adj = to_dense_adj(graph.edge_index)[0]
-
-    # Convert the adjacency matrix to a NetworkX graph for easier distance computation
+    # Convert the adjacency matrix to a NetworkX graph for easier distance computation.
     G = nx.from_numpy_array(adj.numpy())
-
-    # To store furthest nodes for each node
+    # Store furthest nodes for each node.
     furthest_nodes = {}
-    for src_trgs_dist in tqdm(nx.all_pairs_shortest_path_length(G),
-                              desc='Computing furthest nodes'):
-        src = src_trgs_dist[0]
-        trgs_dist = src_trgs_dist[1]
-        sorted_trgs_dist = sorted(trgs_dist.items(), key=lambda x: x[1], reverse=True)
-        furthest_nodes[src] = sorted_trgs_dist[: N]
+    for node in tqdm(G.nodes(), desc='Computing furthest nodes', delay=20):
+        # Compute shortest path lengths from node to all other nodes.
+        lenghts = nx.single_source_shortest_path_length(G, node)
+        # Sort the nodes by distance in descending order.
+        sorted_trgs_dist = sorted(lenghts.items(), key=lambda x: x[1], reverse=True)
+        # Store the N furthest nodes.
+        furthest_nodes[node] = sorted_trgs_dist[: N]
     return furthest_nodes
 
 
@@ -270,21 +267,6 @@ class FileIO:
     def write_json(data, filename):
         with open(filename, "w", encoding="utf8") as f:
             json.dump(data, f)
-
-    @staticmethod
-    def read_excel(filename, sheet_name="Sheet1"):
-        wb_obj = openpyxl.load_workbook(filename)
-        return wb_obj[sheet_name]
-
-    @staticmethod
-    def read_csv(filename: str) -> List[Dict]:
-        with open(filename, "r", encoding="utf8") as f:
-            csvreader = csv.reader(f)
-            header = next(csvreader)
-            return [
-                {h: x for h, x in zip(header, row) if h}
-                for row in csvreader
-            ]
 
     @staticmethod
     def write_numpy(filename: str, array: np.array) -> None:
